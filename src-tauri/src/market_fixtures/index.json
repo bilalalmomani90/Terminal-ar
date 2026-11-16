@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "seq": 4,
+  "updated": "2026-11-13",
+  "name": "تجربة",
+  "packages": [
+    {
+      "id": "demo",
+      "name": "أداة",
+      "developer": "Dev",
+      "version": "1.0.0",
+      "description": "d",
+      "platforms": [
+        "windows"
+      ],
+      "permissions": [
+        "process.run"
+      ],
+      "size": 765,
+      "sha256": "64162020035dc6407a9a0106f18b704e7bec2731a7ca5f813f7cc262029a7332",
+      "status": "suspended",
+      "reviewedAt": "2026-11-13",
+      "notes": "سلوك ضار"
+    }
+  ]
+}

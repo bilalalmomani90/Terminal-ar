@@ -1,0 +1,19 @@
+{
+  "id": "unixsys",
+  "name": "معلومات النظام (Linux / macOS / Android)",
+  "developer": "Terminal AR",
+  "version": "1.0.0",
+  "description": "معلومات الجهاز والعمليات والأقراص بأوامر POSIX المتوفرة على Linux وmacOS وAndroid.",
+  "platforms": ["linux", "macos", "android"],
+  "kind": "command",
+  "engine": "shell",
+  "sdkVersion": "1",
+  "permissions": ["process.run", "system.read"],
+  "actions": [
+    { "id": "os", "title": "معلومات النظام", "description": "اسم النظام وإصدار النواة والمعمارية.", "shell": "any", "steps": ["uname -a"] },
+    { "id": "who", "title": "الجهاز والمستخدم", "description": "اسم الجهاز والمستخدم الحالي.", "shell": "any", "steps": ["hostname", "whoami"] },
+    { "id": "uptime", "title": "مدة التشغيل والحمل", "description": "منذ متى يعمل الجهاز ومتوسط الحمل.", "shell": "any", "steps": ["uptime"] },
+    { "id": "disks", "title": "مساحة الأقراص", "description": "المستخدم والمتاح لكل قرص.", "shell": "any", "steps": ["df -h"] },
+    { "id": "procs", "title": "قائمة العمليات", "description": "كل العمليات الظاهرة للتطبيق.", "shell": "any", "steps": ["ps -A"] }
+  ]
+}
