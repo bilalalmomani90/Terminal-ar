@@ -1,0 +1,123 @@
+name: Linux and macOS Build
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: linux
+          - os: macos-latest
+            label: macos
+    runs-on: ${{ matrix.os }}
+    env:
+      TAR_BUILD: ${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.label }}
+
+      - name: Linux system libraries
+        if: matrix.label == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential libssl-dev libxdo-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: Read version
+        run: |
+          V=$(grep -m1 '^version = ' src-tauri/Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+          echo "### Terminal AR $V — Build ${{ github.run_number }} (${{ matrix.label }})" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install frontend dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck (TypeScript)
+        run: npx tsc --noEmit
+
+      - name: Build frontend
+        run: npm run build
+
+      # اختبارات PTY حقيقية على يونكس + بقية الاختبارات. لا نوقف البناء عند فشلها بل نُظهرها ثم نفشل في النهاية.
+      - name: Rust tests (real PTY sessions)
+        id: tests
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture --test-threads=1 2>&1 | tee test-results.txt
+          code=${PIPESTATUS[0]}
+          echo "#### Rust test results (${{ matrix.label }})" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -n 40 test-results.txt >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          exit $code
+
+      - name: Build packages (Linux)
+        if: matrix.label == 'linux'
+        run: |
+          ok=0
+          for i in 1 2 3; do
+            echo "Build attempt $i"
+            if npm run tauri -- build --bundles deb,appimage; then ok=1; break; fi
+            sleep $((20 * i))
+          done
+          [ $ok = 1 ] || exit 1
+
+      # أيقونة icns تُولَّد وقت البناء من icon.png (لا تُحفظ في المستودع)
+      - name: Build app (macOS)
+        if: matrix.label == 'macos'
+        run: |
+          pip3 install --break-system-packages pillow || pip3 install pillow
+          python3 -c "from PIL import Image; Image.open('src-tauri/icons/icon.png').convert('RGBA').resize((512,512)).save('src-tauri/icons/icon.icns')"
+          ok=0
+          for i in 1 2 3; do
+            echo "Build attempt $i"
+            if npm run tauri -- build --bundles app --config '{"bundle":{"icon":["icons/icon.png","icons/icon.icns"]}}'; then ok=1; break; fi
+            sleep $((20 * i))
+          done
+          [ $ok = 1 ] || exit 1
+
+      - name: Collect files
+        run: |
+          mkdir -p out
+          cp test-results.txt out/ || true
+          cp src-tauri/Cargo.lock out/ || true
+          if [ "${{ matrix.label }}" = "linux" ]; then
+            cp src-tauri/target/release/bundle/deb/*.deb out/ || true
+            cp src-tauri/target/release/bundle/appimage/*.AppImage out/ || true
+          else
+            ditto -c -k --sequesterRsrc --keepParent "src-tauri/target/release/bundle/macos/Terminal AR.app" "out/Terminal-AR-${VERSION}-macos.zip" || true
+          fi
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: terminal-ar-${{ env.VERSION }}-build-${{ github.run_number }}-${{ matrix.label }}
+          path: out/*
+          retention-days: 3
+          if-no-files-found: error
+
+      - name: Fail if tests failed
+        if: steps.tests.outcome == 'failure'
+        run: |
+          echo "Rust tests failed - see test-results.txt in the artifact"
+          exit 1
