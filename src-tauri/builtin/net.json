@@ -3,6 +3,7 @@
   "name": "تشخيص الشبكة",
   "developer": "Terminal AR",
   "version": "1.0.0",
+  "category": "شبكة",
   "description": "فحص الاتصال وعناوين الشبكة وDNS والمنافذ بأوامر Windows الأصلية.",
   "platforms": ["windows"],
   "kind": "command",

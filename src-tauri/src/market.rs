@@ -1156,8 +1156,8 @@ mod tests {
         verify_index_sig(body, sig, pubkey).unwrap();
         let ix: Index = serde_json::from_slice(body).unwrap();
         validate_index(&ix).unwrap();
-        assert_eq!(ix.seq, 3);
-        assert_eq!(ix.packages[0].status, "revoked");
+        assert_eq!(ix.seq, 4);
+        assert_eq!(ix.packages[0].status, "suspended");
         let (arr, _) = parse_key(pubkey).unwrap();
         let cfg = Config {
             repo: REPO.into(),

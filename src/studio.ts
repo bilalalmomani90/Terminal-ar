@@ -578,6 +578,43 @@ async function depsDialog(): Promise<void> {
   }
 }
 
+const CATEGORY_SUGGESTIONS = ["شبكة", "نظام", "ملفات", "حاويات", "قواعد بيانات", "تطوير", "أمان", "أخرى"];
+
+/** يختار تصنيف الأداة من قائمة (مقترحات + التصنيفات المستخدمة في أدواتك) أو تصنيفاً جديداً، أو يزيله. */
+async function categoryDialog(): Promise<void> {
+  const id = needProject();
+  if (!id || !(await saveCurrent(true))) return;
+  let current = "";
+  try {
+    current = ((JSON.parse(await api.studioRead(id, "manifest.json")) as { category?: string }).category ?? "").trim();
+  } catch (err) {
+    await textDialog("التصنيف", `تعذّرت قراءة manifest.json: ${String(err)}`);
+    return;
+  }
+  const used = state.tools.map((t) => t.manifest.category?.trim()).filter((c): c is string => !!c);
+  const names = [...new Set([...used, ...CATEGORY_SUGGESTIONS])];
+  const pick = await chooseDialog(`تصنيف الأداة${current ? ` (الحالي: ${current})` : ""}`, [
+    ...names.map((c) => ({ id: "c:" + c, label: c === current ? `✔ ${c}` : c, desc: used.includes(c) ? "مستخدم في أدواتك" : undefined })),
+    { id: "+new", label: "＋ تصنيف جديد", desc: "اكتب اسماً (حتى 24 حرفاً)" },
+    ...(current ? [{ id: "-none", label: "إزالة التصنيف", desc: "تظهر الأداة تحت «أخرى»" }] : []),
+  ]);
+  if (!pick) return;
+  let value: string | null;
+  if (pick === "+new") {
+    const v = await promptDialog("تصنيف جديد", "اسم التصنيف (حتى 24 حرفاً)", "");
+    value = v ? v.trim() : null;
+    if (!value) return;
+  } else if (pick === "-none") {
+    value = null;
+  } else {
+    value = pick.slice(2);
+  }
+  if (await editManifest((m) => (value === null ? delete m.category : (m.category = value)))) {
+    log(value === null ? "أُزيل تصنيف الأداة" : `تصنيف الأداة: ${value}`);
+    void liveCheck();
+  }
+}
+
 async function permsDialog(): Promise<void> {
   const id = needProject();
   if (!id || !(await saveCurrent(true))) return;
@@ -714,6 +751,7 @@ export function initStudio(): void {
     btn("حذف المشروع", () => void deleteProject(), "danger", true),
     h("span", { class: "st-sep" }),
     btn("نموذج الأداة", () => void formEdit(), "primary", true, "أدخل بيانات الأداة بنموذج بدل كتابة JSON"),
+    btn("التصنيف", () => void categoryDialog(), "", true, "اختر تصنيف الأداة ليُجمَّع به عرضها في قائمة الأدوات"),
     btn("ترتيب الملف", () => void fixManifest(), "", true, "يصلح الفواصل الزائدة ويرتّب manifest.json في أسطر"),
     btn("حفظ", () => void saveCurrent(), "", true),
     btn("تحقق", () => void doValidate(), "", true),

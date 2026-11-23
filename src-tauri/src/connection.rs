@@ -40,6 +40,10 @@ const PAIR_CODE_SECS: u64 = 120;
 const PAIR_MAX_ATTEMPTS: u32 = 3;
 const MAX_CONNECTIONS: usize = 4;
 const DECISION_WAIT: Duration = Duration::from_secs(120);
+/// قفل الكمبيوتر بالهاتف: الهاتف يرسل نبضة كل BEAT_SECS، ويُقفل الكمبيوتر إن غابت النبضات LOCK_TIMEOUT_SECS.
+const BEAT_SECS: u64 = 5;
+const LOCK_TIMEOUT_SECS: u64 = 20;
+const LOCK_CODE_SECS: u64 = 120;
 
 type R<T> = Result<T, String>;
 
@@ -157,6 +161,18 @@ pub enum Msg {
         status: String,
         output: String,
     },
+    /// قفل الكمبيوتر: أول رسالة من الهاتف بعد قراءة QR (الإثبات يربط الرمز بسجل المصافحة).
+    LockHello {
+        name: String,
+        proof: String,
+    },
+    LockResult {
+        ok: bool,
+        name: String,
+        reason: String,
+    },
+    /// نبضة حياة متبادلة بين الهاتف والكمبيوتر.
+    Beat,
     Error {
         message: String,
     },
@@ -298,6 +314,14 @@ fn pair_proof(code: &str, hash: &[u8]) -> String {
     h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
+fn lock_proof(code: &str, hash: &[u8]) -> String {
+    let mut h = Sha256::new();
+    h.update(b"TAR-LOCK-v1");
+    h.update(code.as_bytes());
+    h.update(hash);
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
 fn ct_eq(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
@@ -328,6 +352,18 @@ pub fn local_ip() -> Option<String> {
 // البيئة (لعزل الاتصال عن tauri وللاختبار)
 // ---------------------------------------------------------------------------
 
+/// صورة QR كنص SVG (أبيض وأسود بهامش هادئ، تُعرض على خلفية بيضاء).
+pub fn qr_svg(data: &str) -> R<String> {
+    use qrcode::render::svg;
+    let code = qrcode::QrCode::new(data.as_bytes()).map_err(|e| format!("تعذّر توليد QR: {e}"))?;
+    Ok(code
+        .render::<svg::Color>()
+        .min_dimensions(240, 240)
+        .dark_color(svg::Color("#000000"))
+        .light_color(svg::Color("#ffffff"))
+        .build())
+}
+
 pub trait Host: Send + Sync {
     fn db(&self) -> &Db;
     fn tools_dir(&self) -> PathBuf;
@@ -352,6 +388,44 @@ pub struct PendingPair {
     pub name: String,
     pub fingerprint: String,
     pub sas: String,
+}
+
+struct LockCode {
+    code: String,
+    expires: Instant,
+    attempts: u32,
+}
+
+#[derive(Default)]
+struct LockState {
+    code: Option<LockCode>,
+    /// 0 = لا جلسة. يتغير مع كل هاتف جديد فتنتهي الجلسة القديمة.
+    session: u64,
+    phone: String,
+    last_beat: Option<Instant>,
+    /// فتح طوارئ بسر المشرف: يبقى حتى إغلاق البرنامج أو الضغط على «قفل الآن».
+    emergency: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LockOffer {
+    /// ما يُشفَّر في QR: TARLOCK1|ip|port|code
+    pub payload: String,
+    pub code: String,
+    pub ip: String,
+    pub port: u16,
+    pub secs: u64,
+    pub name: String,
+    pub svg: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LockStatus {
+    pub unlocked: bool,
+    pub phone: String,
+    pub emergency: bool,
 }
 
 struct Listener {
@@ -384,6 +458,10 @@ pub struct Conn {
     next_id: AtomicU64,
     active: AtomicUsize,
     run_lock: Mutex<()>,
+    lock: Mutex<LockState>,
+    lock_timeout: Duration,
+    /// جهة الهاتف: علم إيقاف نبضات الجلسة الحالية (true = توقفت).
+    lock_client: Mutex<Option<Arc<AtomicBool>>>,
 }
 
 fn default_name() -> String {
@@ -409,6 +487,9 @@ impl Conn {
             next_id: AtomicU64::new(1),
             active: AtomicUsize::new(0),
             run_lock: Mutex::new(()),
+            lock: Mutex::new(LockState::default()),
+            lock_timeout: Duration::from_secs(LOCK_TIMEOUT_SECS),
+            lock_client: Mutex::new(None),
         }
     }
 
@@ -571,6 +652,267 @@ impl Conn {
         tx.send(accept).map_err(|_| "انتهى الطلب".to_string())
     }
 
+    // ---- قفل الكمبيوتر بالهاتف (جهة الكمبيوتر) ----
+
+    /// يولّد رمزاً جديداً صالحاً دقيقتين ويبني نص QR وصورته. يتطلب أن يكون الاستماع شغالاً.
+    pub fn lock_begin(&self) -> R<LockOffer> {
+        let port = self
+            .listener
+            .lock()
+            .map_err(|_| "قفل داخلي".to_string())?
+            .as_ref()
+            .map(|l| l.port)
+            .ok_or("الاستماع غير مفعّل")?;
+        // كل عناوين هذا الجهاز الصالحة (شبكة محلية ثم VPN مثل Tailscale)، فيجرّبها الهاتف بالترتيب
+        let mut ips: Vec<String> = crate::discovery::local_addrs()
+            .iter()
+            .map(|a| a.to_string())
+            .collect();
+        if ips.is_empty() {
+            ips.extend(local_ip().filter(|ip| {
+                ip.parse::<std::net::Ipv4Addr>()
+                    .map(crate::discovery::is_usable_v4)
+                    .unwrap_or(false)
+            }));
+        }
+        if ips.is_empty() {
+            return Err(
+                "لا توجد شبكة: وصّل الكمبيوتر بالشبكة نفسها التي يتصل بها الهاتف (أو شغّل VPN مثل Tailscale)"
+                    .into(),
+            );
+        }
+        ips.truncate(4);
+        let ip = ips.join(",");
+        let code = random_code()?;
+        self.lock.lock().map_err(|_| "قفل داخلي".to_string())?.code = Some(LockCode {
+            code: code.clone(),
+            expires: Instant::now() + Duration::from_secs(LOCK_CODE_SECS),
+            attempts: 0,
+        });
+        let payload = format!("TARLOCK1|{ip}|{port}|{code}");
+        let svg = qr_svg(&payload)?;
+        Ok(LockOffer {
+            payload,
+            code,
+            ip,
+            port,
+            secs: LOCK_CODE_SECS,
+            name: self.name.clone(),
+            svg,
+        })
+    }
+
+    pub fn lock_status(&self) -> LockStatus {
+        match self.lock.lock() {
+            Ok(g) => {
+                let alive = g.session != 0
+                    && g.last_beat
+                        .map(|t| t.elapsed() < self.lock_timeout)
+                        .unwrap_or(false);
+                LockStatus {
+                    unlocked: g.emergency || alive,
+                    phone: if alive {
+                        g.phone.clone()
+                    } else {
+                        String::new()
+                    },
+                    emergency: g.emergency,
+                }
+            }
+            Err(_) => LockStatus {
+                unlocked: false,
+                phone: String::new(),
+                emergency: false,
+            },
+        }
+    }
+
+    /// فتح الطوارئ (يُستدعى بعد التحقق من سر المشرف في lib.rs).
+    pub fn lock_emergency(&self) {
+        if let Ok(mut g) = self.lock.lock() {
+            g.emergency = true;
+        }
+    }
+
+    /// «قفل الآن»: ينهي فتح الطوارئ وجلسة الهاتف الحالية.
+    pub fn lock_relock(&self) {
+        if let Ok(mut g) = self.lock.lock() {
+            g.emergency = false;
+            g.session = 0;
+            g.last_beat = None;
+            g.phone.clear();
+            g.code = None;
+        }
+    }
+
+    fn host_lock(&self, host: &dyn Host, ch: &mut Channel, name: &str, proof: &str) -> R<()> {
+        let verdict: Result<(), &'static str> = {
+            let mut st = self.lock.lock().map_err(|_| "قفل داخلي".to_string())?;
+            if st
+                .code
+                .as_ref()
+                .map(|c| Instant::now() > c.expires || c.attempts >= PAIR_MAX_ATTEMPTS)
+                .unwrap_or(false)
+            {
+                st.code = None;
+            }
+            let st = &mut *st;
+            match st.code.take() {
+                None => Err("لا يوجد رمز فعّال أو انتهى: اقرأ الرمز الجديد من شاشة الكمبيوتر"),
+                Some(mut c) => {
+                    if ct_eq(&lock_proof(&c.code, &ch.hash), proof) {
+                        Ok(()) // أُخذ الرمز من الحالة فلا يُستعمل مرة ثانية
+                    } else {
+                        c.attempts += 1;
+                        if c.attempts < PAIR_MAX_ATTEMPTS {
+                            st.code = Some(c); // يبقى صالحاً لمحاولة أخرى
+                        }
+                        Err("رمز غير صحيح")
+                    }
+                }
+            }
+        };
+        if let Err(msg) = verdict {
+            let _ = host.db().audit_add("lock_denied", name, msg);
+            let _ = ch.send(&Msg::LockResult {
+                ok: false,
+                name: self.name.clone(),
+                reason: msg.to_string(),
+            });
+            return Err(msg.to_string());
+        }
+        let sid = self.next();
+        {
+            let mut st = self.lock.lock().map_err(|_| "قفل داخلي".to_string())?;
+            st.session = sid;
+            st.phone = trunc_chars(name, 40);
+            st.last_beat = Some(Instant::now());
+        }
+        let _ = host
+            .db()
+            .audit_add("lock_open", name, &fingerprint_of(&ch.remote));
+        host.notify("lock_changed", sid, "open");
+        ch.send(&Msg::LockResult {
+            ok: true,
+            name: self.name.clone(),
+            reason: String::new(),
+        })?;
+        ch.set_timeout(self.lock_timeout.as_secs().max(1))?;
+        loop {
+            match ch.recv() {
+                Ok(Msg::Beat) => {
+                    {
+                        let mut st = self.lock.lock().map_err(|_| "قفل داخلي".to_string())?;
+                        if st.session != sid {
+                            break; // حلّ محلّه هاتف آخر
+                        }
+                        st.last_beat = Some(Instant::now());
+                    }
+                    if ch.send(&Msg::Beat).is_err() {
+                        break;
+                    }
+                }
+                _ => break, // انقطع الاتصال أو انتهت المهلة أو رسالة غير متوقعة
+            }
+        }
+        if let Ok(mut st) = self.lock.lock() {
+            if st.session == sid {
+                st.session = 0;
+                st.last_beat = None;
+                st.phone.clear();
+            }
+        }
+        let _ = host
+            .db()
+            .audit_add("lock_closed", name, "انقطع الاتصال بالهاتف");
+        host.notify("lock_changed", sid, "closed");
+        Ok(())
+    }
+
+    // ---- قفل الكمبيوتر بالهاتف (جهة الهاتف) ----
+
+    /// يتصل بالكمبيوتر بالرمز المقروء من QR، وعند النجاح يبدأ خيط النبضات. يرجع اسم الكمبيوتر.
+    pub fn lock_connect(
+        self: &Arc<Self>,
+        host: Arc<dyn Host>,
+        addr: &str,
+        code: &str,
+    ) -> R<String> {
+        self.lock_disconnect();
+        // addr: «ip:port» أو عدة عناوين مفصولة بفاصلة؛ تُجرَّب بالترتيب (4 ثوانٍ لكلٍّ)
+        let mut stream = None;
+        let mut last_err = String::from("لا يوجد عنوان");
+        for a in addr.split(',').map(str::trim).filter(|a| !a.is_empty()) {
+            match self.connect_timeout(a, 4) {
+                Ok(s) => {
+                    stream = Some(s);
+                    break;
+                }
+                Err(e) => last_err = e,
+            }
+        }
+        let stream = stream.ok_or(last_err)?;
+        let mut ch = Channel::initiator(stream, &self.identity)?;
+        ch.send(&Msg::LockHello {
+            name: self.name.clone(),
+            proof: lock_proof(code.trim(), &ch.hash),
+        })?;
+        ch.set_timeout(15)?;
+        let pc = match ch.recv()? {
+            Msg::LockResult { ok: true, name, .. } => name,
+            Msg::LockResult { reason, .. } => return Err(reason),
+            Msg::Error { message } => return Err(message),
+            _ => return Err("رد غير متوقع".into()),
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        *self
+            .lock_client
+            .lock()
+            .map_err(|_| "قفل داخلي".to_string())? = Some(stop.clone());
+        let (pc2, stop2) = (pc.clone(), stop.clone());
+        std::thread::spawn(move || {
+            'beat: loop {
+                for _ in 0..(BEAT_SECS * 4) {
+                    if stop2.load(Ordering::SeqCst) {
+                        break 'beat;
+                    }
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+                if ch.send(&Msg::Beat).is_err() || !matches!(ch.recv(), Ok(Msg::Beat)) {
+                    break;
+                }
+            }
+            let manual = stop2.swap(true, Ordering::SeqCst);
+            if !manual {
+                host.notify("lock_lost", 0, &pc2);
+            }
+        });
+        Ok(pc)
+    }
+
+    /// يوقف نبضات الهاتف (يُقفل الكمبيوتر بعد المهلة).
+    pub fn lock_disconnect(&self) {
+        if let Ok(mut g) = self.lock_client.lock() {
+            if let Some(f) = g.take() {
+                f.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
+    pub fn lock_client_active(&self) -> bool {
+        self.lock_client
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|f| !f.load(Ordering::SeqCst)))
+            .unwrap_or(false)
+    }
+
+    /// يولّد الرمز مرة أخرى كل مرة دون تخزين: للاختبار فقط.
+    #[cfg(test)]
+    fn lock_set_timeout(&mut self, d: Duration) {
+        self.lock_timeout = d;
+    }
+
     // ---- جهة المضيف ----
 
     fn handle_conn(self: &Arc<Self>, host: &dyn Host, stream: TcpStream) -> R<()> {
@@ -579,6 +921,7 @@ impl Conn {
         match ch.recv()? {
             Msg::PairHello { name, proof } => self.host_pairing(host, &mut ch, &name, &proof),
             Msg::Hello { name } => self.host_session(host, &mut ch, &name),
+            Msg::LockHello { name, proof } => self.host_lock(host, &mut ch, &name, &proof),
             _ => Err("رسالة أولى غير متوقعة".into()),
         }
     }
@@ -773,6 +1116,10 @@ impl Conn {
     // ---- جهة المبادر ----
 
     fn connect(&self, addr: &str) -> R<TcpStream> {
+        self.connect_timeout(addr, 8)
+    }
+
+    fn connect_timeout(&self, addr: &str, secs: u64) -> R<TcpStream> {
         let addr = if addr.contains(':') {
             addr.to_string()
         } else {
@@ -783,7 +1130,7 @@ impl Conn {
             .map_err(|e| format!("عنوان غير صالح: {e}"))?
             .next()
             .ok_or("عنوان غير صالح")?;
-        let s = TcpStream::connect_timeout(&sa, Duration::from_secs(8))
+        let s = TcpStream::connect_timeout(&sa, Duration::from_secs(secs))
             .map_err(|e| format!("تعذّر الاتصال: {e}"))?;
         let _ = s.set_nodelay(true);
         Ok(s)
@@ -1274,5 +1621,143 @@ mod tests {
         assert!(ok, "{status} {out}");
         assert!(out.contains("hello-remote"), "{out}");
         a.listen_stop();
+    }
+
+    // ---- قفل الكمبيوتر بالهاتف ----
+
+    fn wait_for<F: Fn() -> bool>(f: F) -> bool {
+        for _ in 0..120 {
+            if f() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        false
+    }
+
+    #[test]
+    fn lock_is_closed_until_phone_scans_and_beats() {
+        let (a, _ha, b, hb, port) = setup();
+        assert!(!a.lock_status().unlocked);
+        let offer = a.lock_begin();
+        // بلا شبكة قد يتعذّر استخراج العنوان في بيئة الاختبار؛ نتابع بالرمز مباشرة
+        let code = match offer {
+            Ok(o) => {
+                assert!(o.payload.starts_with("TARLOCK1|"));
+                assert!(o.svg.contains("<svg"));
+                o.code
+            }
+            Err(_) => {
+                a.lock.lock().unwrap().code = Some(LockCode {
+                    code: "424242".into(),
+                    expires: Instant::now() + Duration::from_secs(60),
+                    attempts: 0,
+                });
+                "424242".into()
+            }
+        };
+        let pc = b
+            .lock_connect(hb.clone(), &format!("127.0.0.1:{port}"), &code)
+            .unwrap();
+        assert!(!pc.is_empty());
+        assert!(wait_for(|| a.lock_status().unlocked));
+        assert!(b.lock_client_active());
+        // الرمز يُستعمل مرة واحدة
+        let again = b.lock_connect(hb.clone(), &format!("127.0.0.1:{port}"), &code);
+        assert!(again.is_err());
+        b.lock_disconnect();
+        a.listen_stop();
+    }
+
+    #[test]
+    fn lock_rejects_wrong_code_and_burns_after_three() {
+        let (a, _ha, b, hb, port) = setup();
+        a.lock.lock().unwrap().code = Some(LockCode {
+            code: "111111".into(),
+            expires: Instant::now() + Duration::from_secs(60),
+            attempts: 0,
+        });
+        for _ in 0..PAIR_MAX_ATTEMPTS {
+            let r = b.lock_connect(hb.clone(), &format!("127.0.0.1:{port}"), "000000");
+            assert!(r.is_err());
+        }
+        // بعد 3 محاولات خاطئة يحترق الرمز حتى الصحيح لا يعمل
+        let r = b.lock_connect(hb.clone(), &format!("127.0.0.1:{port}"), "111111");
+        assert!(r.is_err());
+        assert!(!a.lock_status().unlocked);
+        a.listen_stop();
+    }
+
+    #[test]
+    fn lock_expired_code_is_rejected() {
+        let (a, _ha, b, hb, port) = setup();
+        a.lock.lock().unwrap().code = Some(LockCode {
+            code: "222222".into(),
+            expires: Instant::now() - Duration::from_secs(1),
+            attempts: 0,
+        });
+        let r = b.lock_connect(hb.clone(), &format!("127.0.0.1:{port}"), "222222");
+        assert!(r.is_err());
+        assert!(!a.lock_status().unlocked);
+        a.listen_stop();
+    }
+
+    #[test]
+    fn lock_closes_again_when_phone_stops_beating() {
+        let ha = TestHost::new();
+        let hb = TestHost::new();
+        let mut a = Conn::new(Identity::generate().unwrap());
+        a.lock_set_timeout(Duration::from_secs(2));
+        let a = Arc::new(a);
+        let b = Arc::new(Conn::new(Identity::generate().unwrap()));
+        let port = a.listen_start(ha.clone(), 0, false).unwrap();
+        a.lock.lock().unwrap().code = Some(LockCode {
+            code: "333333".into(),
+            expires: Instant::now() + Duration::from_secs(60),
+            attempts: 0,
+        });
+        b.lock_connect(hb.clone(), &format!("127.0.0.1:{port}"), "333333")
+            .unwrap();
+        assert!(wait_for(|| a.lock_status().unlocked));
+        // الهاتف يوقف النبضات (كإغلاق التطبيق أو انقطاع الشبكة)
+        b.lock_disconnect();
+        assert!(wait_for(|| !a.lock_status().unlocked));
+        assert!(!b.lock_client_active());
+        a.listen_stop();
+    }
+
+    #[test]
+    fn emergency_and_relock_work_without_phone() {
+        let a = Conn::new(Identity::generate().unwrap());
+        assert!(!a.lock_status().unlocked);
+        a.lock_emergency();
+        let st = a.lock_status();
+        assert!(st.unlocked && st.emergency);
+        a.lock_relock();
+        assert!(!a.lock_status().unlocked);
+    }
+
+    #[test]
+    fn qr_svg_is_generated_for_the_payload() {
+        let svg = qr_svg("TARLOCK1|192.168.1.20|47821|123456").unwrap();
+        assert!(svg.contains("<svg"));
+        assert!(svg.len() > 500);
+    }
+
+    #[test]
+    fn lock_connect_tries_next_address_when_first_is_unreachable() {
+        let (a, _ha, b, hb, port) = setup();
+        a.lock.lock().unwrap().code = Some(LockCode {
+            code: "555555".into(),
+            expires: Instant::now() + Duration::from_secs(60),
+            attempts: 0,
+        });
+        // المنفذ 1 مغلق: يفشل فوراً ثم ينتقل للعنوان الصحيح
+        let list = format!("127.0.0.1:1,127.0.0.1:{port}");
+        b.lock_connect(hb.clone(), &list, "555555").unwrap();
+        assert!(wait_for(|| a.lock_status().unlocked));
+        b.lock_disconnect();
+        a.listen_stop();
+        assert!(b.lock_connect(hb, "127.0.0.1:1", "555555").is_err());
     }
 }

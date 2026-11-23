@@ -347,7 +347,7 @@ body[data-mode="pro"] .tree .cmd { display: none; }
 .overlay {
   position: fixed;
   inset: 0;
-  z-index: 100;
+  z-index: 20000;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -625,3 +625,62 @@ body.is-admin .admin-only { display: inline-block !important; }
   .statusbar { font-size: 11px; gap: 8px; }
   .statusbar .info { display: none; }
 }
+
+/* العربية في الطرفية: xterm يضيف letter-spacing لكل صف لمطابقة عرض الخلية،
+   وهذا يكسر وصل الحروف العربية. نلغيه ونترك المتصفح يشكّل الحروف. */
+.xterm .xterm-rows,
+.xterm .xterm-rows > div,
+.xterm .xterm-rows span {
+  letter-spacing: 0 !important;
+  font-variant-ligatures: normal;
+  font-kerning: normal;
+  text-rendering: optimizeLegibility;
+  unicode-bidi: isolate;
+}
+
+/* شاشة قفل الكمبيوتر */
+.lock-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: var(--bg, #0b0f14);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  overflow: auto;
+}
+.lock-box {
+  max-width: 420px;
+  width: 100%;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: center;
+}
+.lock-title { font-size: 22px; font-weight: 700; }
+.lock-sub, .lock-note, .lock-manual { color: var(--muted, #8da2b5); font-size: 14px; line-height: 1.7; }
+.lock-qr { background: #fff; padding: 14px; border-radius: 10px; line-height: 0; }
+.lock-qr svg { width: 240px; height: 240px; }
+.lock-code { direction: ltr; unicode-bidi: plaintext; font-size: 16px; }
+.lock-emerg { margin-top: 8px; opacity: 0.7; }
+
+/* العرض النصي */
+.textview-dialog { max-width: min(900px, 96vw); width: 100%; }
+.textview {
+  max-height: 60vh;
+  overflow: auto;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--bg, #0b0f14);
+  border: 1px solid var(--border, #243040);
+  font-family: "Noto Sans Arabic", "Segoe UI", Tahoma, system-ui, sans-serif;
+  font-size: 15px;
+  line-height: 1.8;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.tv-line { white-space: pre-wrap; overflow-wrap: anywhere; unicode-bidi: plaintext; }
+
+.pc-found { display: flex; flex-wrap: wrap; gap: 6px; }

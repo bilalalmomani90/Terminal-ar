@@ -1,6 +1,7 @@
 mod admin;
 mod ads;
 mod connection;
+mod discovery;
 mod market;
 mod plugin;
 mod security;
@@ -84,11 +85,15 @@ async fn terminal_open(
     engine: State<'_, TerminalEngine>,
     db: State<'_, Db>,
     tools: State<'_, ToolsDir>,
+    conn: State<'_, Arc<connection::Conn>>,
     kind: String,
     cols: u16,
     rows: u16,
     cwd: Option<String>,
 ) -> Result<String, String> {
+    if lock_enabled(&db) && !conn.lock_status().unlocked {
+        return Err("الكمبيوتر مقفل: اقرأ رمز QR من تطبيق الهاتف".into());
+    }
     // على Android لا يوجد HOME: مجلد بيانات التطبيق هو المكان الوحيد القابل للكتابة
     let cwd = cwd
         .map(PathBuf::from)
@@ -1089,6 +1094,177 @@ async fn ads_set_enabled(
     ads::set_enabled(&db, on)
 }
 
+// ---------------- قفل الكمبيوتر بالهاتف ----------------
+
+const K_LOCK: &str = "lock.enabled";
+
+/// القفل لسطح المكتب فقط (على Android لا معنى له: الهاتف هو المفتاح).
+fn lock_enabled(db: &Db) -> bool {
+    !cfg!(target_os = "android") && db.setting_get(K_LOCK).ok().flatten().as_deref() == Some("1")
+}
+
+/// إعلان mDNS لشاشة القفل (يعمل فقط ما دام الكمبيوتر مقفلاً).
+#[derive(Default)]
+struct AdvState(std::sync::Mutex<Option<discovery::Advertiser>>);
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LockInfo {
+    enabled: bool,
+    supported: bool,
+    status: connection::LockStatus,
+}
+
+#[tauri::command]
+async fn lock_info(
+    db: State<'_, Db>,
+    conn: State<'_, Arc<connection::Conn>>,
+    adv: State<'_, AdvState>,
+) -> Result<LockInfo, String> {
+    let enabled = lock_enabled(&db);
+    let status = conn.lock_status();
+    if !enabled || status.unlocked {
+        // لا داعي لإعلان الجهاز على الشبكة وهو غير مقفل
+        if let Ok(mut g) = adv.0.lock() {
+            g.take();
+        }
+    }
+    Ok(LockInfo {
+        enabled,
+        supported: !cfg!(target_os = "android"),
+        status,
+    })
+}
+
+#[tauri::command]
+async fn lock_set_enabled(
+    adm: State<'_, admin::AdminState>,
+    db: State<'_, Db>,
+    conn: State<'_, Arc<connection::Conn>>,
+    adv: State<'_, AdvState>,
+    on: bool,
+) -> Result<(), String> {
+    need_admin(&adm)?;
+    db.setting_set(K_LOCK, if on { "1" } else { "0" })?;
+    conn.lock_relock();
+    if !on {
+        if let Ok(mut g) = adv.0.lock() {
+            g.take();
+        }
+    }
+    db.audit_add("lock_enabled", "admin", if on { "on" } else { "off" })?;
+    Ok(())
+}
+
+/// رمز QR جديد لشاشة القفل. يشغّل الاستماع على الشبكة المحلية إن لم يكن شغالاً.
+#[tauri::command]
+async fn lock_begin(
+    db: State<'_, Db>,
+    conn: State<'_, Arc<connection::Conn>>,
+    adv: State<'_, AdvState>,
+    app: AppHandle,
+) -> Result<connection::LockOffer, String> {
+    if !lock_enabled(&db) {
+        return Err("القفل غير مفعّل".into());
+    }
+    let st = conn.status();
+    if st.listening && !st.lan {
+        conn.listen_stop();
+    }
+    if !conn.status().listening {
+        conn.listen_start(Arc::new(AppHost { app }), connection::DEFAULT_PORT, true)?;
+    }
+    let offer = conn.lock_begin()?;
+    // إعلان mDNS (اسم الكمبيوتر والمنفذ فقط، بلا الرمز): تعثّره لا يمنع QR
+    if let Ok(mut g) = adv.0.lock() {
+        if g.is_none() {
+            let addrs = discovery::local_addrs();
+            *g = discovery::Advertiser::start(&offer.name, offer.port, &addrs).ok();
+        }
+    }
+    Ok(offer)
+}
+
+#[tauri::command]
+async fn lock_emergency(
+    adm: State<'_, admin::AdminState>,
+    db: State<'_, Db>,
+    conn: State<'_, Arc<connection::Conn>>,
+    secret: String,
+    name: String,
+    year: String,
+) -> Result<(), String> {
+    let h = adm.inner().clone();
+    let r = tauri::async_runtime::spawn_blocking(move || {
+        let was = h.is_unlocked();
+        let r = h.unlock(&secret, &name, &year);
+        if !was {
+            h.lock(); // الطوارئ لا تفتح صفحة المشرف
+        }
+        r
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    match r {
+        Ok(()) => {
+            conn.lock_emergency();
+            let _ = db.audit_add("lock_emergency", "admin", "نجاح");
+            Ok(())
+        }
+        Err(e) => {
+            let _ = db.audit_add("lock_emergency_fail", "admin", "محاولة فاشلة");
+            Err(e)
+        }
+    }
+}
+
+#[tauri::command]
+async fn lock_relock(conn: State<'_, Arc<connection::Conn>>) -> Result<(), String> {
+    conn.lock_relock();
+    Ok(())
+}
+
+/// جهة الهاتف: الاتصال بالكمبيوتر بما قُرئ من QR.
+#[tauri::command]
+async fn lock_phone_connect(
+    conn: State<'_, Arc<connection::Conn>>,
+    app: AppHandle,
+    addr: String,
+    code: String,
+) -> Result<String, String> {
+    // نقبل شبكة محلية أو VPN فقط (لا عناوين عامة)
+    let list = discovery::parse_addr_list(&addr)?
+        .iter()
+        .map(|(ip, port)| format!("{ip}:{port}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let c = conn.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        c.lock_connect(Arc::new(AppHost { app }), &list, &code)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// جهة الهاتف: البحث عن الكمبيوترات المقفلة على الشبكة نفسها (mDNS، نحو 4 ثوانٍ).
+#[tauri::command]
+async fn lock_discover() -> Result<Vec<discovery::Found>, String> {
+    tauri::async_runtime::spawn_blocking(|| discovery::browse(4))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn lock_phone_disconnect(conn: State<'_, Arc<connection::Conn>>) -> Result<(), String> {
+    conn.lock_disconnect();
+    Ok(())
+}
+
+#[tauri::command]
+async fn lock_phone_active(conn: State<'_, Arc<connection::Conn>>) -> Result<bool, String> {
+    Ok(conn.lock_client_active())
+}
+
 // ---------------- المتجر (المرحلة 8) ----------------
 
 #[tauri::command]
@@ -1201,8 +1377,11 @@ pub fn run() {
     let app = tauri::Builder::default()
         .manage(TerminalEngine::new())
         .manage(admin::AdminState::default())
+        .manage(AdvState::default())
         .manage(WorkflowRuns::default())
         .setup(|app| {
+            #[cfg(mobile)]
+            app.handle().plugin(tauri_plugin_barcode_scanner::init())?;
             let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
             std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
             let db = Db::open(&dir.join("terminal-ar.db"))?;
@@ -1310,6 +1489,15 @@ pub fn run() {
             market_official,
             ads_status,
             ads_request,
+            lock_info,
+            lock_set_enabled,
+            lock_begin,
+            lock_emergency,
+            lock_relock,
+            lock_phone_connect,
+            lock_discover,
+            lock_phone_disconnect,
+            lock_phone_active,
             ads_set_enabled,
             studio_open_tool
         ])

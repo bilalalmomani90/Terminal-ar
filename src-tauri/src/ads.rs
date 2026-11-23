@@ -1,7 +1,8 @@
 //! سياسة الإعلانات (المواصفة القسم 21). هذه الطبقة تقرّر *هل يُسمح* بإعلان الآن؛ لا تعرض إعلاناً بنفسها.
 //!
-//! - لا يوجد SDK ولا معرّف Start.io في هذا البناء: `PROVIDER_COMPILED = false`، فلا يُسمح بأي إعلان على أي منصة.
-//!   يتغير هذا فقط عند إضافة جسر Start.io الحقيقي بمعرّف يقدّمه صاحب الحساب (لا معرّفات مخترعة ولا تجريبية).
+//! - مزوّد الإعلانات (Start.io) يُدمج في بناء Android فقط: سكربت `tools/android_native.py` يضيف المكتبة وجسر JavaScript
+//!   (`window.TarAds`) أثناء بناء الـ APK بمعرّف صاحب الحساب. إن لم يُدمج (فشل السكربت) تتجاهل الواجهة الإعلان
+//!   لأن `window.TarAds` غير موجود، ولا يُحتسب شيء. لا إعلانات خارج Android إطلاقاً.
 //! - لا إعلانات على غير Android إطلاقاً (ويندوز/Linux/macOS: `provider_available()` = false دائماً).
 //! - الحد: 3 إعلانات كحد أقصى في أي نافذة 24 ساعة متحركة (أشدّ من «في اليوم التقويمي» ولا يعتمد على المنطقة الزمنية).
 //!   يُحتسب الإعلان عند *منح الإذن* لا عند العرض، فلا يمكن تجاوز الحد حتى لو تكرر الطلب أو فشل العرض.
@@ -18,14 +19,14 @@ pub const DAILY_CAP: usize = 3;
 pub const WINDOW_SECS: u64 = 24 * 3600;
 pub const MIN_GAP_SECS: u64 = 15 * 60;
 pub const MIN_UPTIME_SECS: u64 = 3 * 60;
-/// يصبح true فقط عند إدخال جسر Start.io الفعلي في البناء.
-pub const PROVIDER_COMPILED: bool = false;
+/// على Android فقط؛ وجود الجسر الفعلي تتحقق منه الواجهة (window.TarAds) قبل الطلب.
+pub const PROVIDER_COMPILED: bool = true;
 
 const K_ENABLED: &str = "ads.enabled";
 const K_LOG: &str = "ads.log";
 
 /// لحظات الاستخدام المسموح ربط الإعلان بها (المواصفة 21.8). أي قيمة أخرى تُرفض.
-pub const MOMENTS: [&str; 2] = ["task_done", "section_change"];
+pub const MOMENTS: [&str; 3] = ["task_done", "section_change", "pc_unlock"];
 
 static START: OnceLock<Instant> = OnceLock::new();
 
@@ -103,7 +104,9 @@ pub fn decide(
     if !MOMENTS.contains(&ctx.moment.as_str()) {
         return deny("bad_moment", "لحظة الاستخدام غير مسموح بها للإعلان");
     }
-    if uptime < MIN_UPTIME_SECS {
+    // فتح الكمبيوتر بالهاتف يحدث عادةً مباشرة بعد تشغيل تطبيق الهاتف، فلا يُطبَّق عليه حد «بعد الفتح».
+    // بقية القيود (3 كل 24 ساعة، الفاصل الأدنى، لا عملية جارية) تبقى كما هي.
+    if uptime < MIN_UPTIME_SECS && ctx.moment != "pc_unlock" {
         return deny("just_started", "لا إعلانات بعد فتح التطبيق مباشرة");
     }
     if ctx.terminal_active {
@@ -191,7 +194,7 @@ pub fn status(db: &Db) -> Status {
         note: if provider_available() {
             ""
         } else {
-            "لا يوجد مزوّد إعلانات في هذا البناء (لم يُضف معرّف Start.io بعد)"
+            "الإعلانات متاحة على Android فقط"
         },
     }
 }
@@ -374,7 +377,7 @@ mod tests {
         let d = request_at(&db, &ctx("task_done"), 0, NOW, 3600, false);
         assert_eq!(d.code, "unavailable");
         assert!(read_log(&db).is_empty());
-        // وبناء هذه النسخة بلا مزوّد: القرار الفعلي دائماً رفض
+        // خارج Android (وبيئة الاختبار) لا مزوّد: القرار الفعلي دائماً رفض
         assert!(!provider_available());
         assert!(!request(&db, &ctx("task_done"), 0).allow);
     }
@@ -396,5 +399,21 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         db.setting_set(K_LOG, "not json").unwrap();
         assert!(read_log(&db).is_empty());
+    }
+
+    #[test]
+    fn pc_unlock_moment_skips_only_the_uptime_floor() {
+        let c = ctx("pc_unlock");
+        assert!(decide(100_000, 5, true, true, &[], &c, 0).allow);
+        // الحد اليومي والفاصل يسريان عليه
+        let log = [100_000 - 60];
+        assert_eq!(decide(100_000, 5, true, true, &log, &c, 0).code, "gap");
+        let log3 = [10_000, 20_000, 30_000];
+        assert_eq!(decide(100_000, 5, true, true, &log3, &c, 0).code, "cap");
+        // غيره من اللحظات ما زال يخضع لحد بعد الفتح
+        assert_eq!(
+            decide(100_000, 5, true, true, &[], &ctx("task_done"), 0).code,
+            "just_started"
+        );
     }
 }

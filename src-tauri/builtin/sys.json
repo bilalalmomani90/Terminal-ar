@@ -3,6 +3,7 @@
   "name": "معلومات النظام",
   "developer": "Terminal AR",
   "version": "1.0.0",
+  "category": "نظام",
   "description": "معلومات الجهاز والعمليات والأقراص.",
   "platforms": ["windows"],
   "kind": "command",

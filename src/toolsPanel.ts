@@ -229,6 +229,16 @@ export function renderToolsTab(): HTMLElement {
     }),
   );
   if (state.tools.length === 0) wrap.append(h("div", { class: "muted-box", text: "لا توجد أدوات مثبتة." }));
-  for (const t of state.tools) wrap.append(card(t));
+  // تجميع حسب التصنيف (الحقل اختياري في manifest). غير المصنَّف يظهر تحت «أخرى» في آخر القائمة.
+  const groups = new Map<string, ToolInfo[]>();
+  for (const t of state.tools) {
+    const c = t.manifest.category?.trim() || "أخرى";
+    groups.set(c, [...(groups.get(c) ?? []), t]);
+  }
+  const names = [...groups.keys()].sort((a, b) => (a === "أخرى" ? 1 : b === "أخرى" ? -1 : a.localeCompare(b, "ar")));
+  for (const c of names) {
+    if (names.length > 1 || c !== "أخرى") wrap.append(h("div", { class: "section-title", text: `${c} (${groups.get(c)!.length})` }));
+    for (const t of groups.get(c)!) wrap.append(card(t));
+  }
   return wrap;
 }

@@ -1,6 +1,6 @@
 [package]
 name = "terminal-ar"
-version = "0.10.0"
+version = "0.14.0"
 description = "Terminal AR"
 edition = "2021"
 
@@ -24,7 +24,13 @@ ed25519-dalek = "2"
 sha2 = "0.10"
 snow = "0.9"
 ureq = { version = "2", default-features = false, features = ["tls"] }
+if-addrs = "0.13"
+mdns-sd = "0.11"
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
+tauri-plugin-barcode-scanner = "2"
 
 [profile.release]
 opt-level = "s"

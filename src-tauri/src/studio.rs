@@ -165,13 +165,25 @@ pub fn create(root: &Path, id: &str, name: &str) -> Result<ProjectInfo, String> 
         return Err("يوجد مشروع بهذا المعرّف".into());
     }
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    // قالب الأداة الجديدة يناسب النظام الذي تعمل عليه الآن (PowerShell على ويندوز، وصدفة النظام على غيره)
+    let (shell, steps) = if cfg!(windows) {
+        (
+            "powershell",
+            vec!["Write-Output 'Hello from Terminal AR Studio'", "whoami"],
+        )
+    } else {
+        (
+            "any",
+            vec!["echo 'Hello from Terminal AR Studio'", "whoami"],
+        )
+    };
     let manifest = serde_json::json!({
         "id": id,
         "name": name,
         "developer": "أنا",
         "version": "0.1.0",
         "description": "",
-        "platforms": ["windows"],
+        "platforms": [plugin::current_platform()],
         "kind": "command",
         "engine": "shell",
         "sdkVersion": "1",
@@ -180,8 +192,8 @@ pub fn create(root: &Path, id: &str, name: &str) -> Result<ProjectInfo, String> 
             "id": "hello",
             "title": "تحية",
             "description": "يطبع رسالة ثم اسم المستخدم.",
-            "shell": "powershell",
-            "steps": ["Write-Output 'Hello from Terminal AR Studio'", "whoami"]
+            "shell": shell,
+            "steps": steps
         }]
     });
     let text = serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?;

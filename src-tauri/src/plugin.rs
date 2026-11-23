@@ -80,6 +80,9 @@ pub struct Manifest {
     pub min_app_version: Option<String>,
     #[serde(default)]
     pub permissions: Vec<String>,
+    /// تصنيف اختياري يُجمَّع به عرض الأدوات (نص حر قصير، مثل «شبكة» أو «نظام»)
+    #[serde(default)]
+    pub category: Option<String>,
     /// محجوز للمرحلة 4 (التوقيعات)
     #[serde(default)]
     pub signature: Option<serde_json::Value>,
@@ -114,7 +117,7 @@ pub struct InstallOutcome {
     pub warnings: Vec<String>,
 }
 
-fn current_platform() -> &'static str {
+pub(crate) fn current_platform() -> &'static str {
     if cfg!(windows) {
         "windows"
     } else if cfg!(target_os = "macos") {
@@ -209,6 +212,15 @@ pub fn diagnose(m: &Manifest, app_version: &str, check_platform: bool) -> Vec<Di
             "اسم الأداة (name) مطلوب وبحد أقصى 60 حرفاً",
             None,
         ));
+    }
+    if let Some(c) = &m.category {
+        if c.trim().is_empty() || c.chars().count() > 24 || c.chars().any(|ch| ch.is_control()) {
+            e.push(Diag::error(
+                "category",
+                "التصنيف (category) نص قصير حتى 24 حرفاً بلا رموز تحكم",
+                Some("مثال: \"شبكة\" أو \"نظام\" أو \"قواعد بيانات\". احذف الحقل إن لم تحتجه."),
+            ));
+        }
     }
     if m.developer.trim().is_empty() || m.developer.chars().count() > 60 {
         e.push(Diag::error(
@@ -778,7 +790,8 @@ pub(crate) fn install_builtins_for(
     for (name, raw) in BUILTIN {
         let m: Manifest =
             serde_json::from_str(raw).map_err(|e| format!("أداة مدمجة {name}: {e}"))?;
-        validate(&m, app_version).map_err(|e| format!("أداة مدمجة {name}: {e}"))?;
+        // فحص المنصة يتم هنا يدوياً (لا في validate): أدوات المنصات الأخرى تُتخطّى ولا تُعدّ خطأ.
+        validate_inner(&m, app_version, false).map_err(|e| format!("أداة مدمجة {name}: {e}"))?;
         if !m.platforms.iter().any(|p| p == platform) {
             continue;
         }
@@ -1096,6 +1109,24 @@ mod tests {
             .unwrap();
         assert!(!net.enabled);
         let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn category_is_optional_and_validated() {
+        let mut m = builtin_manifests().unwrap().remove(0);
+        let has_cat = |m: &Manifest| diagnose(m, APP, false).iter().any(|d| d.path == "category");
+        assert!(!has_cat(&m));
+        m.category = Some("شبكة".into());
+        assert!(!has_cat(&m));
+        for bad in ["", "   ", "x\ny", &"ا".repeat(25)] {
+            m.category = Some(bad.to_string());
+            assert!(
+                diagnose(&m, APP, false)
+                    .iter()
+                    .any(|d| d.path == "category"),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]

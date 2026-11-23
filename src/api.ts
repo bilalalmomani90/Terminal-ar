@@ -46,6 +46,7 @@ export interface ToolManifest {
   sdkVersion: string | null;
   minAppVersion: string | null;
   permissions: string[];
+  category?: string | null;
   signature: unknown;
   actions: ToolAction[];
 }
@@ -112,6 +113,33 @@ export interface MarketView {
   disabled: string[];
 }
 
+export interface LockOffer {
+  payload: string;
+  code: string;
+  ip: string;
+  port: number;
+  secs: number;
+  name: string;
+  svg: string;
+}
+
+export interface FoundPc {
+  name: string;
+  addrs: string[];
+}
+
+export interface LockStatus {
+  unlocked: boolean;
+  phone: string;
+  emergency: boolean;
+}
+
+export interface LockInfo {
+  enabled: boolean;
+  supported: boolean;
+  status: LockStatus;
+}
+
 export interface AdsStatus {
   available: boolean;
   enabled: boolean;
@@ -121,7 +149,7 @@ export interface AdsStatus {
 }
 
 export interface AdsCtx {
-  moment: "task_done" | "section_change";
+  moment: "task_done" | "section_change" | "pc_unlock";
   terminalActive: boolean;
   dialogOpen: boolean;
   commandRunning: boolean;
@@ -481,6 +509,16 @@ export const api = {
   marketRefresh: () => invoke<MarketView>("market_refresh"),
   marketInstall: (id: string, version: string) => invoke<InstallOutcome>("market_install", { id, version }),
   marketOfficial: () => invoke<string[]>("market_official"),
+
+  lockInfo: () => invoke<LockInfo>("lock_info"),
+  lockSetEnabled: (on: boolean) => invoke<void>("lock_set_enabled", { on }),
+  lockBegin: () => invoke<LockOffer>("lock_begin"),
+  lockEmergency: (secret: string, name: string, year: string) => invoke<void>("lock_emergency", { secret, name, year }),
+  lockRelock: () => invoke<void>("lock_relock"),
+  lockPhoneConnect: (addr: string, code: string) => invoke<string>("lock_phone_connect", { addr, code }),
+  lockDiscover: () => invoke<FoundPc[]>("lock_discover"),
+  lockPhoneDisconnect: () => invoke<void>("lock_phone_disconnect"),
+  lockPhoneActive: () => invoke<boolean>("lock_phone_active"),
 
   adsStatus: () => invoke<AdsStatus>("ads_status"),
   adsRequest: (ctx: AdsCtx) => invoke<AdsDecision>("ads_request", { ctx }),

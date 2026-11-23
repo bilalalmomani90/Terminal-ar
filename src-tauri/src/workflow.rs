@@ -269,7 +269,7 @@ fn step_diags(
     if s.retries > MAX_RETRIES {
         out.push(Diag::error(
             &format!("{path}.retries"),
-            format!("أقصى عدد للمحاولات الإضافية {MAX_RETRIES}"),
+            format!("أقصى عدد من المحاولات الإضافية {MAX_RETRIES}"),
             None,
         ));
     }

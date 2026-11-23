@@ -108,7 +108,7 @@ const toolSessions = new Map<string, string>();
 export async function openSession(kind: Kind, opts: OpenOpts = {}): Promise<Sess | null> {
   const label = kindLabel(kind);
   const term = new Terminal({
-    fontFamily: '"Cascadia Mono", Consolas, Menlo, "DejaVu Sans Mono", "Courier New", monospace',
+    fontFamily: '"Cascadia Mono", Consolas, Menlo, "DejaVu Sans Mono", "Courier New", "Noto Sans Arabic", "Noto Naskh Arabic", "Droid Arabic Naskh", monospace',
     fontSize: 14,
     cursorBlink: true,
     scrollback: 10000,

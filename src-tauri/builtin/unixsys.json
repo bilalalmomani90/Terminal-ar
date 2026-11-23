@@ -3,6 +3,7 @@
   "name": "معلومات النظام (Linux / macOS / Android)",
   "developer": "Terminal AR",
   "version": "1.0.0",
+  "category": "نظام",
   "description": "معلومات الجهاز والعمليات والأقراص بأوامر POSIX المتوفرة على Linux وmacOS وAndroid.",
   "platforms": ["linux", "macos", "android"],
   "kind": "command",

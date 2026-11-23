@@ -62,6 +62,13 @@ jobs:
       - name: Generate Android project
         run: npm run tauri -- android init
 
+      # إضافات أصلية: قفل البث المتعدد (اكتشاف الأجهزة) + إعلانات Start.io (معرّف التطبيق ليس سرّاً،
+      # ويمكن تغييره بمتغير المستودع START_IO_APP_ID). إن فشل الدمج أو فشل البناء بها يُبنى التطبيق بدونها تلقائياً.
+      - name: Add native extras (multicast + ads bridge)
+        env:
+          START_IO_APP_ID: ${{ vars.START_IO_APP_ID || '210623682' }}
+        run: python3 tools/android_native.py apply "$START_IO_APP_ID"
+
       - name: Detect signing secrets
         id: sign
         env:
@@ -79,6 +86,12 @@ jobs:
             if npm run tauri -- android build --apk --debug --target aarch64 --config "{\"bundle\":{\"android\":{\"versionCode\":${VERSION_CODE}}}}"; then ok=1; break; fi
             sleep $((30 * i))
           done
+          if [ $ok = 0 ] && [ "${NATIVE:-0}" = "1" ]; then
+            echo "Build with native extras failed: retrying WITHOUT them"
+            python3 tools/android_native.py revert
+            echo "الإضافات الأصلية (الإعلانات واكتشاف الأجهزة): أُزيلت لأن بناءها فشل — تُبنى النسخة بدونها" >> "$GITHUB_STEP_SUMMARY"
+            npm run tauri -- android build --apk --debug --target aarch64 --config "{\"bundle\":{\"android\":{\"versionCode\":${VERSION_CODE}}}}" && ok=1
+          fi
           [ $ok = 1 ] || exit 1
           echo "SIGNING=debug" >> "$GITHUB_ENV"
 
@@ -97,6 +110,12 @@ jobs:
             if npm run tauri -- android build --apk --target aarch64 --config "{\"bundle\":{\"android\":{\"versionCode\":${VERSION_CODE}}}}"; then ok=1; break; fi
             sleep $((30 * i))
           done
+          if [ $ok = 0 ] && [ "${NATIVE:-0}" = "1" ]; then
+            echo "Build with native extras failed: retrying WITHOUT them"
+            python3 tools/android_native.py revert
+            echo "الإضافات الأصلية (الإعلانات واكتشاف الأجهزة): أُزيلت لأن بناءها فشل — تُبنى النسخة بدونها" >> "$GITHUB_STEP_SUMMARY"
+            npm run tauri -- android build --apk --target aarch64 --config "{\"bundle\":{\"android\":{\"versionCode\":${VERSION_CODE}}}}" && ok=1
+          fi
           [ $ok = 1 ] || exit 1
           BT="$ANDROID_HOME/build-tools/34.0.0"
           UNSIGNED=$(find src-tauri/gen/android -name '*release-unsigned.apk' | head -n 1)

@@ -3,6 +3,7 @@
   "name": "Docker",
   "developer": "Terminal AR",
   "version": "1.0.0",
+  "category": "حاويات",
   "description": "عرض الحاويات والصور (يتطلب تثبيت Docker).",
   "platforms": ["windows"],
   "kind": "command",

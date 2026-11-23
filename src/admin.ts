@@ -187,6 +187,18 @@ async function openAdmin(): Promise<void> {
       }),
       h("button", {
         class: "btn",
+        text: "قفل الكمبيوتر بالهاتف (تفعيل/تعطيل)",
+        onclick: run(async () => {
+          const info = await api.lockInfo();
+          if (!info.supported) return "القفل لسطح المكتب فقط.";
+          await api.lockSetEnabled(!info.enabled);
+          return !info.enabled
+            ? "القفل مفعّل: عند فتح البرنامج القادم تظهر شاشة QR. تأكد أن تطبيق الهاتف يتصل بنجاح قبل الإغلاق (مفتاح الطوارئ يفتح بسر المشرف)."
+            : "القفل معطّل.";
+        }),
+      }),
+      h("button", {
+        class: "btn",
         text: "فتح مجلد البيانات",
         onclick: run(async () => {
           await api.adminOpenDataDir();

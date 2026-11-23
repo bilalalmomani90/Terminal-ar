@@ -2,6 +2,8 @@ import { defaultKind } from "./platform";
 import "./style.css";
 import { api } from "./api";
 import { byId } from "./dom";
+import { initLock } from "./lock";
+import { initTextView } from "./textview";
 import { initRunbar } from "./runbar";
 import { initSidebar } from "./sidebar";
 import { emit, loadState, state, subscribe, type Mode } from "./state";
@@ -40,6 +42,8 @@ async function main(): Promise<void> {
   initRunbar();
   initStudio();
   await initTerminals();
+  initLock();
+  initTextView();
 
   applyMode(state.mode, false);
   byId("status").textContent = "جاهز";

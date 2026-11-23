@@ -3,6 +3,7 @@
   "name": "قواعد البيانات",
   "developer": "Terminal AR",
   "version": "1.0.0",
+  "category": "قواعد بيانات",
   "description": "فحص عملاء قواعد البيانات المثبتة (SQLite وMySQL وPostgreSQL).",
   "platforms": ["windows"],
   "kind": "command",
