@@ -1,0 +1,8 @@
+# منع تحويل نهايات الأسطر في ملفات الاختبار الموقّعة والثنائية (تحويلها يكسر التوقيع)
+src-tauri/src/market_fixtures/* -text
+*.tarpkg -text
+*.png binary
+*.ico binary
+*.icns binary
+*.sh text eol=lf
+*.py text eol=lf

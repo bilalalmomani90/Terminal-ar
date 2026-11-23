@@ -1150,9 +1150,16 @@ mod tests {
     /// اختبار توافق بين اللغات: فهرس وحزمة ولّدتهما tools/market_tool.py (Python) يجب أن يقبلهما Rust.
     #[test]
     fn python_generated_repo_is_accepted_by_rust() {
-        let body = include_bytes!("market_fixtures/index.json");
-        let sig = include_bytes!("market_fixtures/index.sig");
-        let pubkey = std::str::from_utf8(include_bytes!("market_fixtures/reviewer.pub")).unwrap();
+        // على Windows قد يحوّل git نهايات الأسطر (CRLF) في الملفات النصية فيتغيّر ما وُقِّع عليه؛
+        // نُرجِعها إلى LF هنا، وملف .gitattributes يمنع التحويل أصلاً.
+        fn lf(b: &[u8]) -> Vec<u8> {
+            b.iter().copied().filter(|&c| c != b'\r').collect()
+        }
+        let body_v = lf(include_bytes!("market_fixtures/index.json"));
+        let sig_v = lf(include_bytes!("market_fixtures/index.sig"));
+        let pub_v = lf(include_bytes!("market_fixtures/reviewer.pub"));
+        let (body, sig) = (&body_v[..], &sig_v[..]);
+        let pubkey = std::str::from_utf8(&pub_v).unwrap();
         verify_index_sig(body, sig, pubkey).unwrap();
         let ix: Index = serde_json::from_slice(body).unwrap();
         validate_index(&ix).unwrap();
