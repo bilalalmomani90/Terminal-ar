@@ -169,7 +169,14 @@ fn enabled_from(setting: Option<&str>, play_default: bool) -> bool {
     }
 }
 
+/// على أندرويد الإعلانات إلزامية (قرار المطوّر): لا يمكن إيقافها من الإعدادات.
+/// القيود الأخرى (الحد اليومي والفاصل والشاشات الحساسة) تبقى سارية.
+const MANDATORY: bool = cfg!(target_os = "android");
+
 pub fn is_enabled(db: &Db) -> bool {
+    if MANDATORY {
+        return true;
+    }
     enabled_from(
         db.setting_get(K_ENABLED).ok().flatten().as_deref(),
         cfg!(all(feature = "play", target_os = "android")),
@@ -177,6 +184,9 @@ pub fn is_enabled(db: &Db) -> bool {
 }
 
 pub fn set_enabled(db: &Db, on: bool) -> Result<(), String> {
+    if MANDATORY && !on {
+        return Err("الإعلانات إلزامية في نسخة أندرويد ولا يمكن إيقافها".into());
+    }
     db.setting_set(K_ENABLED, if on { "1" } else { "0" })?;
     let _ = db.audit_add("ads_switch", "", if on { "on" } else { "off" });
     Ok(())
