@@ -160,8 +160,20 @@ fn write_log(db: &Db, log: &[u64]) -> Result<(), String> {
     )
 }
 
+/// القيمة المخزّنة تغلب دائماً. عند غيابها: معطّل، إلا في بناء Google Play على Android حيث الإعلانات
+/// مُعلَنة في المتجر فتُفعَّل افتراضياً (يبقى مفتاح المشرف لإيقافها).
+fn enabled_from(setting: Option<&str>, play_default: bool) -> bool {
+    match setting {
+        Some(v) => v == "1",
+        None => play_default,
+    }
+}
+
 pub fn is_enabled(db: &Db) -> bool {
-    db.setting_get(K_ENABLED).ok().flatten().as_deref() == Some("1")
+    enabled_from(
+        db.setting_get(K_ENABLED).ok().flatten().as_deref(),
+        cfg!(all(feature = "play", target_os = "android")),
+    )
 }
 
 pub fn set_enabled(db: &Db, on: bool) -> Result<(), String> {
@@ -415,5 +427,14 @@ mod tests {
             decide(100_000, 5, true, true, &[], &ctx("task_done"), 0).code,
             "just_started"
         );
+    }
+
+    #[test]
+    fn stored_switch_wins_and_default_depends_on_play_build() {
+        assert!(!enabled_from(None, false));
+        assert!(enabled_from(None, true));
+        assert!(enabled_from(Some("1"), false));
+        assert!(!enabled_from(Some("0"), true)); // المشرف أوقفها صراحة
+        assert!(!enabled_from(Some("garbage"), true));
     }
 }

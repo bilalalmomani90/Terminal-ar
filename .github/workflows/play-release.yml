@@ -1,0 +1,129 @@
+name: Google Play Release (AAB)
+
+# يُشغَّل يدوياً فقط: Actions ← Google Play Release (AAB) ← Run workflow.
+# يبني ملف AAB موقّعاً بمفتاح الرفع (الأسرار الأربعة نفسها) لرفعه في Play Console.
+# نسخة Play: بلا تنزيل حزم المتجر من الشبكة، والإعلانات مفعّلة افتراضياً (feature "play").
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  VERSION_CODE: ${{ github.run_number }}
+  TAR_BUILD: ${{ github.run_number }}
+
+jobs:
+  aab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require signing secrets
+        env:
+          KS: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          P1: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          P2: ${{ secrets.ANDROID_KEY_ALIAS }}
+          P3: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KS" ] || [ -z "$P1" ] || [ -z "$P2" ] || [ -z "$P3" ]; then
+            echo "::error::أسرار التوقيع الأربعة غير مكتملة (ANDROID_KEYSTORE_BASE64 / _PASSWORD / ANDROID_KEY_ALIAS / ANDROID_KEY_PASSWORD)"
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: android-play
+
+      - name: Android SDK and NDK
+        run: |
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" "platforms;android-36" "platforms;android-34" "build-tools;34.0.0" "ndk;27.0.12077973"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+
+      - name: Read version
+        run: |
+          V=$(grep -m1 '^version = ' src-tauri/Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+          echo "### Terminal AR $V — Google Play AAB (versionCode ${{ github.run_number }})" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install frontend dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Generate Android project
+        run: npm run tauri -- android init
+
+      - name: Check targetSdk (Play requires 36+)
+        run: python3 tools/check_target_sdk.py
+
+      - name: Add native extras (multicast + ads bridge)
+        env:
+          START_IO_APP_ID: ${{ vars.START_IO_APP_ID || '210623682' }}
+        run: python3 tools/android_native.py apply "$START_IO_APP_ID"
+
+      - name: Build AAB
+        run: |
+          CFG="{\"bundle\":{\"android\":{\"versionCode\":${VERSION_CODE}}}}"
+          ok=0
+          for i in 1 2 3; do
+            echo "Build attempt $i"
+            if npm run tauri -- android build --aab --target aarch64 --features play --config "$CFG"; then ok=1; break; fi
+            sleep $((30 * i))
+          done
+          if [ $ok = 0 ] && [ "${NATIVE:-0}" = "1" ]; then
+            echo "Build with native extras failed: retrying WITHOUT them"
+            python3 tools/android_native.py revert
+            echo "الإضافات الأصلية (الإعلانات واكتشاف الأجهزة): أُزيلت لأن بناءها فشل — النسخة بدون إعلانات" >> "$GITHUB_STEP_SUMMARY"
+            npm run tauri -- android build --aab --target aarch64 --features play --config "$CFG" && ok=1
+          fi
+          [ $ok = 1 ] || exit 1
+
+      - name: Sign AAB with the upload key
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          AAB=$(find src-tauri/gen/android -name '*.aab' | head -n 1)
+          [ -n "$AAB" ] || { echo "::error::AAB not found"; exit 1; }
+          echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/upload.jks"
+          mkdir -p out
+          OUT="out/Terminal-AR-${VERSION}-build${VERSION_CODE}-PLAY.aab"
+          jarsigner -keystore "$RUNNER_TEMP/upload.jks" -storepass:env KS_PASS -keypass:env KEY_PASS \
+            -sigalg SHA256withRSA -digestalg SHA-256 -signedjar "$OUT" "$AAB" "$KEY_ALIAS"
+          jarsigner -verify "$OUT" | tail -n 1
+          FP=$(keytool -list -v -keystore "$RUNNER_TEMP/upload.jks" -storepass "$KS_PASS" -alias "$KEY_ALIAS" 2>/dev/null | grep -m1 'SHA256:' | sed 's/^ *//')
+          rm -f "$RUNNER_TEMP/upload.jks"
+          {
+            echo "- الملف: \`$(basename "$OUT")\` — ارفعه في Play Console"
+            echo "- بصمة مفتاح الرفع: \`$FP\`"
+            echo "- versionCode: $VERSION_CODE (يجب أن يزيد مع كل رفع جديد)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Terminal-AR-PLAY-AAB
+          path: out/*.aab
+          if-no-files-found: error
+          retention-days: 7

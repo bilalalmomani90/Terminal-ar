@@ -1,5 +1,6 @@
 // المنصة الحالية. يُستنتج من وكيل المتصفح المضمَّن (WebView2 على ويندوز، WKWebView على macOS، WebKitGTK على Linux)
 // ليكون متاحاً بشكل متزامن عند تحميل الوحدات. Rust هو المرجع الفعلي (app_info.os).
+import { invoke } from "@tauri-apps/api/core";
 import type { ShellKind } from "./state";
 
 // ملاحظة: وكيل Android WebView يحوي "Linux" أيضاً، لذلك يُفحص Android قبل Linux.
@@ -34,4 +35,16 @@ export function wantKind(want: string): ShellKind | null {
 
 export function unsupportedShellMessage(want: string): string {
   return `هذا الإجراء يحتاج صدفة «${want}» وهي غير متاحة على هذا النظام (${OS_NAME}).`;
+}
+
+/** معلومات البناء من Rust. play = نسخة Google Play (بلا تنزيل حزم المتجر من الشبكة). */
+export const build = { play: false };
+
+export async function loadBuildInfo(): Promise<void> {
+  try {
+    const i = await invoke<{ play?: boolean }>("app_info");
+    build.play = i.play === true;
+  } catch {
+    /* يبقى الافتراضي */
+  }
 }

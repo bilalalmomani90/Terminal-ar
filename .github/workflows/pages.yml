@@ -1,0 +1,62 @@
+name: Privacy Policy Page
+
+# ينشر صفحة سياسة الخصوصية على GitHub Pages لتستعمل رابطها في Play Console.
+# قبل التشغيل: Settings ← Pages ← Source = GitHub Actions، وفي Settings ← Variables أضف:
+#   PRIVACY_CONTACT_EMAIL (بريد للتواصل)  و  PRIVACY_DEVELOPER_NAME (اسمك أو اسم الجهة)
+# (المستودع يجب أن يكون عاماً ليعمل Pages مجاناً.)
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "docs/privacy/**"
+      - ".github/workflows/pages.yml"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fill contact details
+        env:
+          CONTACT_EMAIL: ${{ vars.PRIVACY_CONTACT_EMAIL }}
+          DEVELOPER_NAME: ${{ vars.PRIVACY_DEVELOPER_NAME }}
+        run: |
+          if [ -z "$CONTACT_EMAIL" ] || [ -z "$DEVELOPER_NAME" ]; then
+            echo "::error::أضف المتغيرين PRIVACY_CONTACT_EMAIL و PRIVACY_DEVELOPER_NAME في Settings ← Secrets and variables ← Actions ← Variables"
+            exit 1
+          fi
+          python3 - <<'PY'
+          import os, html
+          p = "docs/privacy/index.html"
+          s = open(p, encoding="utf-8").read()
+          s = s.replace("{{CONTACT_EMAIL}}", html.escape(os.environ["CONTACT_EMAIL"], quote=True))
+          s = s.replace("{{DEVELOPER_NAME}}", html.escape(os.environ["DEVELOPER_NAME"], quote=True))
+          assert "{{" not in s
+          open(p, "w", encoding="utf-8").write(s)
+          PY
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/privacy
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Show the URL
+        run: |
+          echo "رابط سياسة الخصوصية (ضعه في Play Console): ${{ steps.deployment.outputs.page_url }}" >> "$GITHUB_STEP_SUMMARY"

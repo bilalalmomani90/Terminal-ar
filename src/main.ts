@@ -1,4 +1,4 @@
-import { defaultKind } from "./platform";
+import { defaultKind, loadBuildInfo } from "./platform";
 import "./style.css";
 import { api } from "./api";
 import { byId } from "./dom";
@@ -28,6 +28,7 @@ function applyMode(mode: Mode, persist: boolean): void {
 
 async function main(): Promise<void> {
   await loadState();
+  await loadBuildInfo();
 
   const modeBtns = document.querySelectorAll<HTMLButtonElement>("[data-mode-btn]");
   for (const b of modeBtns) {

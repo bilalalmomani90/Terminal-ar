@@ -43,8 +43,10 @@ struct AppInfo {
     name: &'static str,
     version: &'static str,
     build: &'static str,
-    /// windows | linux | macos
+    /// windows | linux | macos | android
     os: &'static str,
+    /// بناء متجر Google Play (يعطّل تنزيل حزم المتجر من الشبكة)
+    play: bool,
 }
 
 fn make_sink(app: AppHandle) -> Sink {
@@ -74,6 +76,7 @@ fn app_info() -> AppInfo {
         version: env!("CARGO_PKG_VERSION"),
         build: env!("TAR_BUILD"),
         os: std::env::consts::OS,
+        play: cfg!(feature = "play"),
     }
 }
 
@@ -1310,6 +1313,9 @@ async fn market_install(
     id: String,
     version: String,
 ) -> Result<InstallOutcome, String> {
+    if cfg!(feature = "play") {
+        return Err("تنزيل حزم المتجر غير متاح في نسخة Google Play".into());
+    }
     tauri::async_runtime::spawn_blocking(move || {
         let db = app.state::<Db>();
         let dir = app.state::<ToolsDir>();

@@ -7,6 +7,7 @@ import { confirmDialog, textDialog } from "./dialog";
 import { pasteInstallDialog } from "./pasteInstall";
 import { auditDialog, formatReport, permissionsDialog, SIG_LABELS, trustedDialog } from "./securityUi";
 import { fmtTime, h } from "./dom";
+import { build } from "./platform";
 import { refreshTools, savePinned, state, togglePin } from "./state";
 import { setStatus } from "./terminals";
 
@@ -216,7 +217,7 @@ export function renderToolsTab(): HTMLElement {
         { class: "tool-actions" },
         h("button", { class: "btn small", text: "الناشرون الموثوقون", onclick: () => void trustedDialog().then(refreshTools) }),
         h("button", { class: "btn small", text: "سجل التدقيق", onclick: () => void auditDialog() }),
-        h("button", { class: "btn small", text: "المتجر", title: "أدوات معتمدة من مراجِع المتجر", onclick: () => void openMarket() }),
+        ...(build.play ? [] : [h("button", { class: "btn small", text: "المتجر", title: "أدوات معتمدة من مراجِع المتجر", onclick: () => void openMarket() })]),
         h("button", { class: "btn small", text: "سير العمل", title: "تدفقات من عدة خطوات", onclick: () => void openWorkflows() }),
         h("button", { class: "btn small", text: "تثبيت من كود", onclick: () => void pasteInstallDialog() }),
         h("button", { class: "btn small primary", text: "تثبيت حزمة .tarpkg", onclick: () => input.click() }),
