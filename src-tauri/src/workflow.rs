@@ -674,6 +674,25 @@ fn trunc(s: &str, max: usize) -> String {
     }
 }
 
+/// يُرسل خرج الخطوة للواجهة فور انتهائها (حدث `step_output`) ليظهر دون انتظار نهاية التدفق.
+/// هذا عرض عند انتهاء كل خطوة وليس بثاً سطراً بسطر أثناء التنفيذ.
+fn emit_output(emit: Emit<'_>, id: &str, r: &StepResult) {
+    let out = r.stdout.trim();
+    let err = r.stderr.trim();
+    if out.is_empty() && err.is_empty() {
+        return;
+    }
+    let mut text = trunc(out, 1500);
+    if !err.is_empty() {
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str("[stderr] ");
+        text.push_str(&trunc(err, 500));
+    }
+    emit("step_output", id, &r.status, &text);
+}
+
 fn env_name(prefix: &str, id: &str, suffix: &str) -> String {
     let up: String = id
         .chars()
@@ -867,6 +886,7 @@ pub fn run_prepared(
                 emit("step_start", &s.id, "running", "");
                 let r = run_step(s, exec, build_env(vars, &results), cancel);
                 emit("step_end", &s.id, &r.status, &r.note);
+                emit_output(emit, &s.id, &r);
                 if r.status == "cancelled" {
                     halted = Some("cancelled");
                 } else if r.status == "failed" {
@@ -926,6 +946,7 @@ pub fn run_prepared(
                                 emit("step_start", &ch.id, "running", "");
                                 let r = run_step(ch, exec, env, cancel);
                                 emit("step_end", &ch.id, &r.status, &r.note);
+                                emit_output(emit, &ch.id, &r);
                                 r
                             }))
                         })

@@ -1,6 +1,6 @@
 [package]
 name = "terminal-ar"
-version = "0.15.1"
+version = "0.18.1"
 description = "Terminal AR"
 edition = "2021"
 

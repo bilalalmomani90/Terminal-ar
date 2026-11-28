@@ -357,7 +357,7 @@ export interface WfRunRow {
 
 export interface WfEvent {
   runId: number;
-  kind: "step_start" | "step_end" | "run_end";
+  kind: "step_start" | "step_end" | "step_output" | "run_end";
   stepId: string;
   status: string;
   text: string;

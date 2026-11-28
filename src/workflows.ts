@@ -6,6 +6,7 @@ import { confirmDialog, mount, textDialog } from "./dialog";
 import { fmtTime, h } from "./dom";
 import { jsonPathLines, lineForPath } from "./jsonPath";
 import { PERM_LABELS } from "./securityUi";
+import { createBuilder } from "./wfBuilder";
 import { setStatus } from "./terminals";
 
 const STATUS_LABEL: Record<string, string> = {
@@ -237,6 +238,15 @@ async function editWorkflow(initial: string): Promise<void> {
       })();
     });
 
+    const builder = createBuilder(
+      () => ta.value,
+      (t) => {
+        ta.value = t;
+        void check();
+      },
+    );
+    ta.addEventListener("input", () => builder.refresh());
+    fixBtn.addEventListener("click", () => builder.refresh());
     const box = h(
       "div",
       { class: "dialog wide wf-dialog" },
@@ -245,6 +255,8 @@ async function editWorkflow(initial: string): Promise<void> {
         class: "dialog-msg",
         text: "نتائج الخطوات تصل لأوامرك كمتغيرات بيئة (مثل $env:TAR_STEP_HOST_STDOUT و $env:TAR_VAR_LABEL) ولا تُدرج في نص الأمر، منعاً للحقن.",
       }),
+      h("div", { class: "dialog-msg", text: "المنشئ المرئي (يعدّل النص أدناه):" }),
+      builder.el,
       ta,
       problems,
       h("div", { class: "dialog-actions" }, saveBtn, fixBtn, h("button", { class: "btn", text: "إلغاء", onclick: done })),
@@ -344,9 +356,16 @@ async function runViewer(r: WfRow, plan: WfPlan): Promise<void> {
     }
   };
 
+  // خرج كل خطوة يظهر فور انتهائها؛ التقرير الكامل يستبدله عند نهاية التدفق.
+  const liveOutput = (stepId: string, text: string) => {
+    const title = plan.steps.find((x) => x.id === stepId)?.title || stepId;
+    details.append(h("div", { class: "wf-live" }, h("b", { text: title }), h("pre", { text })));
+  };
+
   const handleEvent = (e: WfEvent) => {
     if (e.kind === "step_start") setStep(e.stepId, "running");
     else if (e.kind === "step_end") setStep(e.stepId, e.status, e.text);
+    else if (e.kind === "step_output") liveOutput(e.stepId, e.text);
     else if (e.kind === "run_end") void showFinal();
   };
 

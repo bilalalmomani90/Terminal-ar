@@ -684,3 +684,13 @@ body.is-admin .admin-only { display: inline-block !important; }
 .tv-line { white-space: pre-wrap; overflow-wrap: anywhere; unicode-bidi: plaintext; }
 
 .pc-found { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* منشئ التدفقات المرئي */
+.wf-builder { display: grid; gap: 8px; margin: 8px 0; }
+.wfb-step { border: 1px solid var(--border); border-radius: 8px; padding: 8px; display: grid; gap: 6px; background: rgba(255,255,255,.02); }
+.wfb-head { display: flex; gap: 6px; align-items: center; }
+.wfb-n { min-width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; background: var(--accent, #2dd4bf); color: #04110f; font-weight: 700; font-size: 12px; }
+.wfb-input { flex: 1; min-width: 0; background: #070a0e; color: var(--text, #e6edf3); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font: inherit; }
+.wfb-cmd { font-family: Consolas, monospace; font-size: 13px; }
+.wf-live { border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; margin: 6px 0; font-size: 13px; }
+.wf-live pre { margin: 4px 0 0; white-space: pre-wrap; direction: ltr; text-align: left; font-family: Consolas, monospace; max-height: 160px; overflow: auto; }

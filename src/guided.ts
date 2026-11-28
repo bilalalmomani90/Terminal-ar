@@ -1,7 +1,8 @@
 import { api } from "./api";
 import { mount, textDialog } from "./dialog";
 import { h } from "./dom";
-import { OUTPUT_LABELS, RECIPES, generate, paramErrors, type OutputMode, type Recipe } from "./recipes";
+import { IS_WINDOWS } from "./platform";
+import { OUTPUT_LABELS, allowedFor, generate, paramErrors, recipesFor, type Flavor, type OutputMode, type Recipe } from "./recipes";
 import { slugFrom } from "./toolForm";
 
 /**
@@ -33,6 +34,9 @@ export async function openGuided(): Promise<GuidedResult | null> {
       resolve(v);
     };
 
+    // لهجة الصدفة حسب نظام هذا الجهاز: PowerShell على ويندوز، وsh على Linux/macOS.
+    const flavor: Flavor = IS_WINDOWS ? "powershell" : "sh";
+    const RECIPES = recipesFor(flavor);
     let recipe: Recipe = RECIPES[0];
     const values: Record<string, string> = {};
     let output: OutputMode = "raw";
@@ -87,13 +91,14 @@ export async function openGuided(): Promise<GuidedResult | null> {
 
     const buildOutputs = () => {
       outSel.replaceChildren();
-      for (const m of recipe.allowed) {
+      for (const m of allowedFor(recipe, flavor)) {
         const o = document.createElement("option");
         o.value = m;
         o.textContent = OUTPUT_LABELS[m];
         outSel.append(o);
       }
-      if (!recipe.allowed.includes(output)) output = recipe.allowed[0];
+      const allowed = allowedFor(recipe, flavor);
+      if (!allowed.includes(output)) output = allowed[0];
       outSel.value = output;
     };
 
@@ -126,7 +131,7 @@ export async function openGuided(): Promise<GuidedResult | null> {
       if (Object.keys(pe).length) bad = true;
       recipeDesc.textContent = recipe.description;
       if (Object.keys(pe).length === 0) {
-        const steps = generate(recipe, values, output);
+        const steps = generate(recipe, values, output, flavor);
         preview.textContent = [
           `ما ستفعله الأداة: ${recipe.title}`,
           recipe.description,
@@ -156,7 +161,7 @@ export async function openGuided(): Promise<GuidedResult | null> {
 
     const create = async () => {
       const { id } = idOf();
-      const steps = generate(recipe, values, output);
+      const steps = generate(recipe, values, output, flavor);
       createBtn.disabled = true;
       note.textContent = "جارٍ الإنشاء...";
       try {
@@ -168,12 +173,12 @@ export async function openGuided(): Promise<GuidedResult | null> {
           developer: "أنا",
           version: "1.0.0",
           description: recipe.description,
-          platforms: ["windows"],
+          platforms: flavor === "sh" ? ["linux", "macos"] : ["windows"],
           kind: "command",
           engine: "shell",
           sdkVersion: "1",
           permissions,
-          actions: [{ id: recipe.id, title: recipe.title, description: recipe.description, shell: "powershell", steps }],
+          actions: [{ id: recipe.id, title: recipe.title, description: recipe.description, shell: flavor === "sh" ? "sh" : "powershell", steps }],
         });
         const write = () => api.studioWrite(id, "manifest.json", JSON.stringify(manifest(), null, 2) + "\n");
         await write();

@@ -87,7 +87,7 @@ jobs:
         if: matrix.label == 'macos'
         run: |
           pip3 install --break-system-packages pillow || pip3 install pillow
-          python3 -c "from PIL import Image; Image.open('src-tauri/icons/icon.png').convert('RGBA').resize((512,512)).save('src-tauri/icons/icon.icns')"
+          python3 -c "from PIL import Image; Image.open('src-tauri/icons/icon.png').convert('RGBA').resize((1024,1024)).save('src-tauri/icons/icon.icns')"
           ok=0
           for i in 1 2 3; do
             echo "Build attempt $i"

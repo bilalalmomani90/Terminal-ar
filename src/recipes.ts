@@ -5,6 +5,9 @@
 
 export type OutputMode = "raw" | "table" | "list" | "file";
 
+/** لهجة الصدفة التي تُبنى لها الأوامر: PowerShell على ويندوز، وsh على Linux/macOS. */
+export type Flavor = "powershell" | "sh";
+
 export interface Param {
   key: string;
   label: string;
@@ -20,8 +23,12 @@ export interface Recipe {
   description: string;
   params: Param[];
   allowed: OutputMode[];
-  /** يبني الخطوات. الخطوة الأخيرة هي التي يُضاف لها تنسيق الخرج. */
+  /** يبني الخطوات (PowerShell). الخطوة الأخيرة هي التي يُضاف لها تنسيق الخرج. */
   build: (p: Record<string, string>) => string[];
+  /** نسخة Linux/macOS (sh). إن غابت فالوصفة لا تظهر هناك. */
+  buildSh?: (p: Record<string, string>) => string[];
+  /** أنماط الخرج المتاحة في نسخة sh (الافتراضي: raw وfile فقط). */
+  allowedSh?: OutputMode[];
 }
 
 export const OUTPUT_LABELS: Record<OutputMode, string> = {
@@ -38,7 +45,7 @@ const NAME = (v: string): string | null =>
   /^[A-Za-z0-9._-]{1,64}$/.test(v) ? null : "حروف إنجليزية وأرقام ونقطة وشرطة فقط (مثال: java)";
 
 const HOST = (v: string): string | null =>
-  /^[A-Za-z0-9.-]{1,253}$/.test(v) ? null : "اسم موقع أو عنوان فقط (مثال: google.com أو 8.8.8.8)";
+  /^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$/.test(v) ? null : "اسم موقع أو عنوان فقط (مثال: google.com أو 8.8.8.8)";
 
 const COUNT = (v: string): string | null => (/^\d{1,3}$/.test(v) && Number(v) >= 1 ? null : "رقم من 1 إلى 999");
 
@@ -52,6 +59,9 @@ export const RECIPES: Recipe[] = [
     build: (p) => [
       `if (Get-Command ${p.program} -ErrorAction SilentlyContinue) { Write-Output '${p.program} مثبت:'; Get-Command ${p.program} | Select-Object -ExpandProperty Source } else { Write-Output '${p.program} غير مثبت على هذا الجهاز' }`,
     ],
+    buildSh: (p) => [
+      `if command -v ${p.program} >/dev/null 2>&1; then echo '${p.program} مثبت:'; command -v ${p.program}; else echo '${p.program} غير مثبت على هذا الجهاز'; fi`,
+    ],
   },
   {
     id: "open-ports",
@@ -62,6 +72,7 @@ export const RECIPES: Recipe[] = [
     build: () => [
       "Get-NetTCPConnection -State Listen | Select-Object LocalAddress,LocalPort,@{n='Process';e={(Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).ProcessName}}",
     ],
+    buildSh: () => ["if command -v ss >/dev/null 2>&1; then ss -ltn; else lsof -iTCP -sTCP:LISTEN -P -n; fi"],
   },
   {
     id: "system-info",
@@ -70,6 +81,7 @@ export const RECIPES: Recipe[] = [
     params: [],
     allowed: ["raw", "table", "list", "file"],
     build: () => ["Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,OSArchitecture,LastBootUpTime"],
+    buildSh: () => ["uname -a; if command -v sw_vers >/dev/null 2>&1; then sw_vers; else cat /etc/os-release 2>/dev/null; fi; uptime"],
   },
   {
     id: "disk-space",
@@ -80,6 +92,7 @@ export const RECIPES: Recipe[] = [
     build: () => [
       "Get-PSDrive -PSProvider FileSystem | Select-Object Name,@{n='UsedGB';e={[math]::Round($_.Used/1GB,1)}},@{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}}",
     ],
+    buildSh: () => ["df -h"],
   },
   {
     id: "top-processes",
@@ -90,6 +103,7 @@ export const RECIPES: Recipe[] = [
     build: (p) => [
       `Get-Process | Sort-Object CPU -Descending | Select-Object -First ${Number(p.count)} Name,Id,CPU,@{n='MB';e={[math]::Round($_.WorkingSet64/1MB)}}`,
     ],
+    buildSh: (p) => [`ps aux | sort -nrk 3,3 | head -n ${Number(p.count)}`],
   },
   {
     id: "network-info",
@@ -98,6 +112,7 @@ export const RECIPES: Recipe[] = [
     params: [],
     allowed: ["raw", "file"],
     build: () => ["ipconfig /all"],
+    buildSh: () => ["if command -v ip >/dev/null 2>&1; then ip addr; else ifconfig; fi"],
   },
   {
     id: "ping-host",
@@ -106,6 +121,7 @@ export const RECIPES: Recipe[] = [
     params: [{ key: "host", label: "الموقع أو العنوان", placeholder: "google.com", check: HOST }],
     allowed: ["raw", "file"],
     build: (p) => [`ping -n 4 ${p.host}`],
+    buildSh: (p) => [`ping -c 4 ${p.host}`],
   },
   {
     id: "list-folder",
@@ -114,6 +130,7 @@ export const RECIPES: Recipe[] = [
     params: [{ key: "path", label: "مسار المجلد", placeholder: "C:\\Users", check: (v) => (v.trim() ? NO_QUOTE(v) : "المسار مطلوب") }],
     allowed: ["raw", "table", "list", "file"],
     build: (p) => [`Get-ChildItem -Path '${p.path}' | Select-Object Name,Length,LastWriteTime`],
+    buildSh: (p) => [`ls -la -- '${p.path}'`],
   },
   {
     id: "custom-command",
@@ -122,18 +139,33 @@ export const RECIPES: Recipe[] = [
     params: [{ key: "command", label: "الأمر", placeholder: "whoami", check: (v) => (v.trim() && !/[\r\n\0]/.test(v) ? null : "اكتب أمراً واحداً في سطر واحد") }],
     allowed: ["raw", "file"],
     build: (p) => [p.command.trim()],
+    buildSh: (p) => [p.command.trim()],
   },
 ];
 
-/** يضيف تنسيق الخرج إلى الخطوة الأخيرة. */
-export function applyOutput(steps: string[], mode: OutputMode): string[] {
+/** يضيف تنسيق الخرج إلى الخطوة الأخيرة. في sh يُدعم raw وfile فقط (tee يحفظ نسخة في result.txt). */
+export function applyOutput(steps: string[], mode: OutputMode, flavor: Flavor = "powershell"): string[] {
   if (mode === "raw" || steps.length === 0) return steps;
   const out = steps.slice();
   const i = out.length - 1;
+  if (flavor === "sh") {
+    if (mode === "file") out[i] = `{ ${out[i]}; } | tee result.txt`;
+    return out;
+  }
   if (mode === "table") out[i] += " | Format-Table -AutoSize";
   else if (mode === "list") out[i] += " | Format-List";
   else out[i] += " | Out-String -Width 200 | Tee-Object -FilePath result.txt";
   return out;
+}
+
+/** الوصفات المتاحة للهجة المعطاة. */
+export function recipesFor(flavor: Flavor): Recipe[] {
+  return flavor === "sh" ? RECIPES.filter((r) => r.buildSh) : RECIPES;
+}
+
+/** أنماط الخرج المسموحة للوصفة في هذه اللهجة. */
+export function allowedFor(r: Recipe, flavor: Flavor): OutputMode[] {
+  return flavor === "sh" ? (r.allowedSh ?? ["raw", "file"]).filter((m) => m === "raw" || m === "file") : r.allowed;
 }
 
 export function paramErrors(r: Recipe, values: Record<string, string>): Record<string, string> {
@@ -145,8 +177,10 @@ export function paramErrors(r: Recipe, values: Record<string, string>): Record<s
   return e;
 }
 
-export function generate(r: Recipe, values: Record<string, string>, mode: OutputMode): string[] {
+export function generate(r: Recipe, values: Record<string, string>, mode: OutputMode, flavor: Flavor = "powershell"): string[] {
   const clean: Record<string, string> = {};
   for (const p of r.params) clean[p.key] = (values[p.key] ?? "").trim();
-  return applyOutput(r.build(clean), mode);
+  const build = flavor === "sh" ? r.buildSh : r.build;
+  if (!build) return [];
+  return applyOutput(build(clean), mode, flavor);
 }
